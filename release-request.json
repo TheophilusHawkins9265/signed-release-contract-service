@@ -1,0 +1,22 @@
+{
+  "release_id": "rel-1042",
+  "version": "2.4.0",
+  "build": {
+    "build_id": "build-882",
+    "commit_sha": "a1b2c3d4",
+    "status": "passed",
+    "diagnostics": [
+      {
+        "tool": "contract-linter",
+        "level": "info",
+        "message": "Contract checks passed"
+      }
+    ]
+  },
+  "contract_pdf_base64": "BASE64_PDF",
+  "certificate_pem": "PEM_CERTIFICATE",
+  "private_key_pem": "PEM_PRIVATE_KEY",
+  "signer_location": "Shanghai",
+  "retention_days": 30,
+  "download_expires_seconds": 3600
+}
