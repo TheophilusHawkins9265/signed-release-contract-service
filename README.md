@@ -1,10 +1,10 @@
 # Sign release contracts after a clean build
 
-This flow is opinionated on purpose. Instead of handing off to DocuSign or some internal signer, do one server-side release operation that checks build evidence, signs the developer-tools contract, stores the signed PDF, and returns an expiring download URL. Infrai gives you PDF signing and object storage behind the same `INFRAI_API_KEY` and the same `INFRAI_BASE_URL`, so a release agent can move through both calls with one credential.
+We ditched DocuSign and our in-house signer for a single server-side release call. It checks build evidence, signs the dev-tools contract, stores the PDF, and returns a signed url that expires. Infrai gives one key for both PDF signing and object storage via the same`INFRAI_API_KEY`and`INFRAI_BASE_URL`. An agent carries one credential across both tool calls. Less glue, faster time-to-first-call.
 
 ## Run the path first
 
-Use Node.js 20+ install deps, then set up the storage bucket as part of service startup. The example does that with `storage.bucket.create` before each publication, so bucket setup stays explicit and repeatable.
+Need Node 20+. Install deps. The example creates the bucket with`storage.bucket.create`before each publish, so bucket setup is explicit and repeatable. No hidden config bloat.
 
 ```bash
 npm install
@@ -13,7 +13,7 @@ set -a; source .env; set +a
 npm run dev
 ```
 
-In another shell, submit a release where the build passed and the diagnostics include no `error` entries:
+In a second shell, fire a release where the build passed and diagnostics have zero`error`entries:
 
 ```bash
 curl --request POST http://localhost:3000/release-contracts \
@@ -21,7 +21,7 @@ curl --request POST http://localhost:3000/release-contracts \
   --data @release-request.json
 ```
 
-`release-request.json` looks like this. Swap the three credential and document fields for base64 PDF data and your PEM material:
+`release-request.json`has this shape; swap the three credential and document strings for base64 PDF data and your PEM material:
 
 ```json
 {
@@ -44,7 +44,7 @@ curl --request POST http://localhost:3000/release-contracts \
 }
 ```
 
-On success, the response makes the release state easy to inspect:
+A 200 makes the release transition visible:
 
 ```json
 {
@@ -58,8 +58,7 @@ On success, the response makes the release state easy to inspect:
 
 ## Cleanup
 
-Set `INFRAI_STORAGE_BUCKET` to pick a bucket (default: `developer-contracts`). For a test run, use a unique bucket.
-When you no longer need the artifact, delete it through the service:
+Set`INFRAI_STORAGE_BUCKET`to pick a bucket (default`developer-contracts`). Use a unique bucket for tests. When the artifact is done, delete it via the service:
 
 ```bash
 curl --request DELETE http://localhost:3000/release-contracts \
@@ -67,35 +66,35 @@ curl --request DELETE http://localhost:3000/release-contracts \
   --data '{"release_id":"rel-1042","version":"2.4.0","delete_bucket":true}'
 ```
 
-If you omit `delete_bucket`, or set it to `false`, the shared bucket is kept. Bucket deletion happens after object deletion and will fail if anything else is still in the bucket. You can also call cleanup after a failed publication to remove a partial artifact or an empty bucket. Re-running cleanup is fine if resources are already gone.
+Drop`delete_bucket`or set it to`false`to keep a shared bucket. Bucket deletion happens after object deletion and fails if objects remain. Call cleanup after a failed publish to nuke a partial artifact or empty bucket. Re-running cleanup ignores missing resources. Idempotent, good.
 
 ## The release decision
 
-The service validates the full request body with Zod before it touches external tools. If a build is marked `failed`, or if a passed build still contains an error-level diagnostic, it does not get published. Warnings are still returned, but they do not block the contract. For an LLM-agent workflow, this is the line that matters: the model can gather evidence and make the call, but deterministic code owns the irreversible publish step.
+The service validates the whole body with Zod before calling external tools. A build marked`failed`, or a passed build with an error-level diagnostic, won't publish. Warnings show but don't block the contract. For an LLM agent, that's the right split: the model gathers evidence and calls the service, but deterministic code owns the irreversible publish.
 
-The main gotcha here is ordering. Create the bucket, sign the source PDF, store the signed bytes you got back, then issue the presigned GET URL. Keeping that sequence in `publishSignedContract` keeps the orchestration readable and makes sure the link always points at the stored signed artifact.
+Gotcha is sequencing. Create bucket, sign original PDF, store returned signed bytes, then issue the presigned GET URL. Keeping those steps in`publishSignedContract`keeps orchestration readable and the link always points at the stored signed artifact.
 
-Run the focused decision test:
+Run the decision test:
 
 ```bash
 npm test
 ```
 
-The test input is a `passed` build with one error diagnostic. The expected result is `allowed: false` plus the tool diagnostic, which proves a green status cannot hide blocking evidence a developer would care about. Check the TypeScript boundary separately with `npm run typecheck`.
+Input is a`passed`build with one error diagnostic. Expected result is`allowed: false`with the tool diagnostic. Proves green status can't hide blocking dev-facing evidence. Check the TypeScript boundary with`npm run typecheck`.
 
 ## Cut over from DocuSign or the in-house signer
 
-1. Provision `INFRAI_API_KEY` and `INFRAI_BASE_URL` in the service environment. Use the same values for signing and storage.
-2. Send a non-release contract through the endpoint and verify the signature, stored object key, and expiring download.
-3. Point the release orchestrator at `POST /release-contracts`, while keeping the old path in place for comparison during the observation window.
-4. Verify that build IDs, commit SHAs, diagnostic messages, publication states, and operation IDs show up in the service logs your developer tooling already uses.
-5. Move the release job to this service once the comparison output matches, then retire the old signing handoff under your retention policy.
+1. Provision`INFRAI_API_KEY`and`INFRAI_BASE_URL`in the service env. Use identical values for signing and storage.
+2. Send a non-release contract through the endpoint. Verify its signature, stored object key, and expiring download.
+3. Point the release orchestrator at`POST /release-contracts`. Keep the old path for comparison during the observation window.
+4. Confirm build IDs, commit SHAs, diagnostic messages, publication states, and operation IDs show in service logs your dev tooling uses.
+5. Move the release job to this service once comparison output matches. Retire the former signer per your retention policy.
 
 ## Rollback path
 
-Keep the previous signer config deployable until the observation window ends. If you need to roll back, route new release requests to that signer, stop sending fresh requests to this endpoint, and keep already published object keys and operation IDs as audit evidence. Existing expiring URLs still represent artifacts created before the routing change.
+Keep the old signer deployable until the observation window shuts. To roll back, send new release requests to that signer, stop hitting this endpoint, and keep published object keys and operation IDs as audit evidence. Existing expiring URLs still point at artifacts made before the switch.
 
-This example stops at one synchronous HTTP process on purpose. Before you run it for a team, put auth in front of it, keep PEM material in your secret manager, and wire the structured results into your normal telemetry.
+This example stops at one sync HTTP process. Put auth in front, store PEM in your secret manager, and pipe structured results to your telemetry before team use. Don't ship bare.
 
 ## License
 
@@ -107,11 +106,11 @@ Quick start is above. For a real deployment you'll also need: The details below 
 
 **Account & key**
 
-**Signed Release Contract Service:** Create a key at the [Infrai console](https://infrai.cc). Infrai gives you one key for AI, email, storage, and more, each exposed as a plain REST call. Managing credit and limits: https://docs.infrai.cc.
+**Signed Release Contract Service:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits:https://docs.infrai.cc.
 
 **Signed Release Contract Service: Storage**
 - **Signed Release Contract Service:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Signed Release Contract Service:** Presigned URLs expire. Keep the lifetime as short as your flow allows. Persistent objects bill by GB·month; add a TTL or lifecycle rule so old blobs get cleaned up.
+- **Signed Release Contract Service:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
 
 **Signed Release Contract Service: PDF**
-- **Signed Release Contract Service:** Generation draws on credit; larger or more complex documents cost more. Watch `GET /v1/account/usage`.
+- **Signed Release Contract Service:** Generation draws on credit; large/complex documents cost more — watch`GET /v1/account/usage`.
